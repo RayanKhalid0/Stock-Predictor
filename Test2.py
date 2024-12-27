@@ -1,48 +1,109 @@
-import pandas as pd
-import yfinance as yf
 import numpy as np
+import pandas as pd
+import tensorflow as tf
+from keras.src.callbacks import EarlyStopping
+from keras.src.layers import Conv1D
+from keras.src.optimizers import Adam
+from sklearn.metrics import mean_absolute_percentage_error, r2_score, mean_squared_error, mean_absolute_error
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import MinMaxScaler
+from tensorflow.keras import Sequential
+from tensorflow.keras.layers import Conv2D, MaxPooling2D, Flatten, Dense, Dropout
+from tensorflow.keras.regularizers import l2
+import matplotlib.pyplot as plt
+import yfinance as yf
+
+data = yf.download('NFTY', start='2008-01-01', end='2024-07-16')
+data.fillna(method='ffill', inplace=True)
+
+data['SMA_50'] = data['Close'].rolling(window=50).mean()
+data['SMA_200'] = data['Close'].rolling(window=200).mean()
+data['EMA_20'] = data['Close'].ewm(span=20, adjust=False).mean()
+data['RSI_14'] = 100 - (
+            100 / (1 + data['Close'].diff().apply(lambda x: np.where(x > 0, x, 0)).rolling(window=14).mean() /
+                   data['Close'].diff().apply(lambda x: np.where(x < 0, -x, 0)).rolling(window=14).mean()))
+data['MACD'] = data['Close'].ewm(span=12, adjust=False).mean() - data['Close'].ewm(span=26, adjust=False).mean()
+data['Bollinger_Upper'] = data['Close'].rolling(window=20).mean() + (data['Close'].rolling(window=20).std() * 2)
+data['Bollinger_Lower'] = data['Close'].rolling(window=20).mean() - (data['Close'].rolling(window=20).std() * 2)
+data.fillna(method='bfill', inplace=True)
+data['Close_Target'] = data['Close'].shift(-1)
+
+features = ['Open', 'High', 'Close', 'Low', 'Volume', 'SMA_50', 'SMA_200']
+target = 'Close_Target'
+
+data.drop(columns=['Adj Close'], axis=1, inplace=True)
+data.dropna(inplace=True)
+
+scaler = MinMaxScaler()
+scaled_data = scaler.fit_transform(data[features + [target]])
+
+X = scaled_data[:, :-1]
+y = scaled_data[:, -1]
+
+X = X.reshape(X.shape[0], X.shape[1], 1)
+
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, shuffle=False)
+model = Sequential([
+    Conv1D(filters=64, kernel_size=2, activation='relu', input_shape=(X_train.shape[1], 1)),
+    Dropout(0.2),
+    Conv1D(filters=32, kernel_size=2, activation='relu'),
+    Dropout(0.2),
+    Flatten(),
+    Dense(50, activation='relu'),
+    Dense(1)
+])
+
+model.compile(optimizer=Adam(learning_rate=0.0008), loss='mean_squared_error')
+early_stopping = EarlyStopping(monitor='val_loss', patience=1000, restore_best_weights=True)
+
+history = model.fit(X_train, y_train, epochs=200, batch_size=56, validation_data=(X_test, y_test), shuffle=False, callbacks=[early_stopping])
+model.save('CNN-NFTY.h5')
+
+loss = model.evaluate(X_test, y_test)
+print(f'Test Loss: {loss}')
+
+predictions = model.predict(X_test)
+
+predicted_prices = scaler.inverse_transform(np.concatenate((X_test.reshape(X_test.shape[0], X_test.shape[1]), predictions), axis=1))[:, -1]
+actual_prices = scaler.inverse_transform(np.concatenate((X_test.reshape(X_test.shape[0], X_test.shape[1]), y_test.reshape(-1, 1)), axis=1))[:, -1]
 
 
-def get_stock_price(ticker):
-    stock_data = yf.Ticker(ticker)
-    try:
-        current = stock_data.history(period='1d')['Close'].iloc[-1]
-        return current
-    except IndexError:
-        print(f"Error: {ticker}")
-        return None
 
+mse = mean_squared_error(actual_prices, predicted_prices)
+mape = mean_absolute_percentage_error(actual_prices, predicted_prices)
+r2 = r2_score(actual_prices, predicted_prices)
+mae = mean_absolute_error(actual_prices, predicted_prices)
+rmse = np.sqrt(mse)
 
-News = pd.read_csv('News-Sentiment-Analysis.csv', encoding='latin-1')
-Lose = pd.read_csv('Losing-Sentiment-Analysis.csv', encoding='latin-1')
-Cor10 = pd.read_csv('CorrectionAnalysis-10.csv')
-Cor = pd.read_csv('CorrectionAnalysis.csv')
-Bull = pd.read_csv('Bullish-Sentiment-Analysis.csv')
-B_Cor = pd.read_csv('Bullish-CorrectionAnalysis.csv')
-B_Cor10 = pd.read_csv('Bullish-CorrectionAnalysis-10.csv')
-Neutral = pd.read_csv('NeutralAnalysis.csv', encoding='latin-1')
+print(f"Mean squared Error - MSE: {mse}")
+print(f"Mean Absolute Percentage Error - MAPE: {mape}")
+print(f"R-squared R^2: {r2}")
+print(f"Mean Absolute Error - MAE: {mae}")
+print(f"Root Mean Square Error - RMSE: {rmse}")
 
-Total = pd.concat([News, Lose, Cor, Cor10, Bull, B_Cor, B_Cor10, Neutral])
-Total.drop_duplicates(subset=['Headline', 'Day', 'Current', '1DAY'], inplace=True)
+count_true = 0
+count_false = 0
 
-T = [-0.30860417676246543, -0.09513325661549253, -0.07500000186264512, -0.04933527725610359, -0.04772945933890939, -0.04695651842200238, -0.04132231274684204, -0.04105090209131846, -0.03781512408618731, -0.03463681257528833, -0.021546271124294407, -0.018518610500991368, -0.01487206520337452, -0.011425567341356888, -0.01134214427451975, -0.009836584562160744, -0.006741803303391998, -0.004836905350592607, -0.004274526301752855, -0.0008405374180772621, 0.0, 0.001175805849179969, 0.003596050559435024, 0.004107720365800046, 0.0050834928377325814, 0.005395721244081881, 0.006763609678620385, 0.010737417466434305, 0.014234523000662441, 0.018214380620433734, 0.025957977031656327, 0.02774643562894399, 0.02870365374699957, 0.03871316690078409, 0.056115158852643454, 0.06741573409952314, 0.07802543865410438, 0.08272134216673004, 0.097717481280618, 0.10910590017744289, 0.10956093493421212, 0.14081149034143042, 0.14487635932292492, 0.15506198597931703, 0.18976899442674927, 0.2915601227312962]
+for idx in range(1, len(predicted_prices)):
+    if (predicted_prices[idx] < actual_prices[idx - 1] and actual_prices[idx] < actual_prices[idx - 1]) or \
+            (predicted_prices[idx] > actual_prices[idx - 1] and actual_prices[idx] > actual_prices[idx - 1]):
+        count_true += 1
+    else:
+        count_false += 1
 
-word = 'trading higher'
-changes = []
-for i in T:
+print(f"False Trends: {count_false}")
+print(f"True Trends: {count_true}")
 
-    for idx, row in Total.iterrows():
-        try:
-            price = get_stock_price(row['Symbol'])
-            current = row['Current']
-            change = (price - current) / current
-            if change == i:
-                print(f"{row['Headline']} : {change}")
-        except Exception as e:
-            print(e)
+accuracy = np.mean([1 - abs(actual_prices[i] - predicted_prices[i]) / actual_prices[i] for i in range(len(predicted_prices))]) * 100
+print(f"Accuracy: {accuracy}")
 
-T = sorted(changes)
-print(T)
-print(np.average(changes))
-
+plt.figure(figsize=(14, 7))
+plt.plot(data.index[-len(y_test):], actual_prices, color='blue', label='Actual Values')
+plt.plot(data.index[-len(y_test):], predicted_prices, color='red', label='Predicted Values')
+plt.xlabel('Date')
+plt.ylabel('Closing Price')
+plt.title('Actual vs Predicted Closing Prices CNN')
+plt.legend()
+plt.grid(True)
+plt.show()
 
